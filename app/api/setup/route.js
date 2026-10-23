@@ -1,0 +1,21 @@
+import { handler, json, body, clean, HttpError, csv } from '@/lib/api';
+import { q, q1 } from '@/lib/db';
+export const dynamic = 'force-dynamic';
+import crypto from 'crypto';
+import { hashPassword, validPassword, createSession, rateLimit, clientIp, audit } from '@/lib/auth';
+export const GET = handler(async () => json({ needed: !(await q1('SELECT 1 FROM users LIMIT 1')) }), { auth: false });
+export const POST = handler(async (req) => {
+  if (!(await rateLimit('setup:' + clientIp(), 10, 900))) throw new HttpError(429, 'Demasiados intentos');
+  const b = await body(req);
+  const key = process.env.ADMIN_SETUP_KEY || '';
+  const given = String(b.setupKey || '');
+  if (!key) throw new HttpError(400, 'Configura ADMIN_SETUP_KEY en Vercel primero');
+  if (given.length !== key.length || !crypto.timingSafeEqual(Buffer.from(given), Buffer.from(key))) throw new HttpError(403, 'Clave de instalación incorrecta');
+  if (await q1('SELECT 1 FROM users LIMIT 1')) throw new HttpError(409, 'Ya existe un administrador');
+  const username = clean(b.username, 40).toLowerCase();
+  if (!/^[a-z0-9._-]{3,40}$/.test(username)) throw new HttpError(400, 'Usuario: 3-40 letras/números');
+  if (!validPassword(b.password)) throw new HttpError(400, 'Contraseña mínima de 8 caracteres');
+  const u = await q1("INSERT INTO users(username,nombre,password_hash,role) VALUES($1,$2,$3,'admin') RETURNING id", [username, clean(b.nombre, 80) || username, await hashPassword(b.password)]);
+  await createSession(u.id); await audit(u.id, 'setup_admin', username);
+  return json({ ok: true });
+}, { auth: false });
